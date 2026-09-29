@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>保留策略演算台</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f9;
+      --panel: #ffffff;
+      --ink: #172033;
+      --muted: #64748b;
+      --line: #dbe3ee;
+      --blue: #2457d6;
+      --green: #177245;
+      --red: #b42318;
+      --amber: #92400e;
+      --purple: #5b21b6;
+    }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+    header { padding: 28px 32px 20px; background: linear-gradient(120deg, #10233f, #1f4d91); color: white; }
+    header h1 { margin: 0 0 8px; font-size: 30px; }
+    header p { margin: 0; opacity: .86; }
+    main { padding: 24px 32px 40px; max-width: 1280px; margin: auto; }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 18px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: 0 8px 28px rgba(15, 23, 42, .06); }
+    .span7 { grid-column: span 7; }
+    .span5 { grid-column: span 5; }
+    .span12 { grid-column: span 12; }
+    h2 { margin: 0 0 14px; font-size: 19px; }
+    h3 { margin: 16px 0 8px; font-size: 15px; }
+    .clock { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input, button { font: inherit; border-radius: 8px; border: 1px solid var(--line); padding: 8px 10px; }
+    button { background: var(--blue); color: white; border-color: var(--blue); cursor: pointer; }
+    button.secondary { background: white; color: var(--blue); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 9px 8px; vertical-align: top; text-align: left; }
+    th { color: var(--muted); font-weight: 600; background: #f8fafc; }
+    .pill { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .DELETED { color: var(--green); background: #dcfce7; }
+    .BLOCKED { color: var(--red); background: #fee4e2; }
+    .UNKNOWN { color: var(--amber); background: #fef3c7; }
+    .PENDING, .RETAINED { color: var(--purple); background: #ede9fe; }
+    .muted { color: var(--muted); }
+    pre { background: #0f172a; color: #dbeafe; padding: 12px; border-radius: 10px; overflow: auto; font-size: 12px; max-height: 340px; }
+    .chain { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 14px; }
+    .chain span { border: 1px solid var(--line); padding: 5px 9px; border-radius: 999px; background: #f8fafc; font-size: 12px; }
+    .reason { padding: 10px; border-left: 4px solid var(--blue); background: #eff6ff; border-radius: 8px; margin: 10px 0; }
+    .error { color: var(--red); font-size: 13px; white-space: pre-wrap; }
+    @media (max-width: 900px) { .span7, .span5 { grid-column: span 12; } main, header { padding-left: 16px; padding-right: 16px; } }
+  </style>
+</head>
+<body>
+<header>
+  <h1>保留策略演算台</h1>
+  <p>冻结策略版本、资源快照摘要、逐条解释、法律保留与幂等执行收据；删除前先解释、再重放。</p>
+</header>
+<main class="grid">
+  <section class="card span5">
+    <h2>可控时钟</h2>
+    <div class="clock">
+      <strong id="clock">读取中</strong>
+      <input id="atTime" placeholder="2026-09-29T00:00:00Z" style="flex:1;min-width:220px" />
+      <button onclick="setClock()">设置时钟</button>
+      <button class="secondary" onclick="advanceClock()">前进 1 天</button>
+    </div>
+    <p class="muted">API 也可用 <code>X-At-Time</code> 指定单次请求时间；持久化事件仍记录创建时刻。</p>
+    <div id="clockError" class="error"></div>
+  </section>
+
+  <section class="card span7">
+    <h2>资源追踪</h2>
+    <div class="clock">
+      <input id="resourceId" value="R-INTERRUPT" style="flex:1" />
+      <button onclick="traceResource()">追踪资源</button>
+    </div>
+    <div id="traceSummary" class="muted">从资源可追到规则、保留事件、计划条目和执行收据。</div>
+  </section>
+
+  <section class="card span7">
+    <h2>预置计划</h2>
+    <div id="planSummary" class="muted">读取中</div>
+    <table>
+      <thead><tr><th>#</th><th>资源</th><th>冻结结论</th><th>当前状态</th><th>为什么</th><th>操作</th></tr></thead>
+      <tbody id="planItems"></tbody>
+    </table>
+  </section>
+
+  <section class="card span5">
+    <h2>资源链路</h2>
+    <div id="traceChain"><div class="muted">选择资源后显示命中规则、保留事件、计划条目和收据。</div></div>
+  </section>
+
+  <section class="card span12">
+    <h2>冻结解释与执行收据</h2>
+    <pre id="detail">点击表格中的“解释/收据”查看。</pre>
+  </section>
+</main>
+
+<script>
+const api = async (path, options = {}) => {
+  const response = await fetch('/api' + path, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+  });
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : {};
+  if (!response.ok) throw new Error(data.error ? data.error.message : response.statusText);
+  return data;
+};
+const pill = value => `<span class="pill ${value}">${value}</span>`;
+const show = (id, data) => { document.getElementById(id).textContent = JSON.stringify(data, null, 2); };
+const esc = value => String(value ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function loadClock() {
+  const data = await api('/clock');
+  document.getElementById('clock').textContent = data.clock.now;
+}
+async function setClock() {
+  try {
+    const data = await api('/clock', { method: 'POST', body: JSON.stringify({ now: document.getElementById('atTime').value }) });
+    document.getElementById('clock').textContent = data.clock.now;
+    document.getElementById('clockError').textContent = '';
+  } catch (error) { document.getElementById('clockError').textContent = error.message; }
+}
+async function advanceClock() {
+  try {
+    const data = await api('/clock/advance', { method: 'POST', body: JSON.stringify({ duration: 'P1D' }) });
+    document.getElementById('clock').textContent = data.clock.now;
+    document.getElementById('clockError').textContent = '';
+  } catch (error) { document.getElementById('clockError').textContent = error.message; }
+}
+
+async function loadPlan() {
+  const data = await api('/plans/PLAN-DEMO-001');
+  const plan = data.plan;
+  document.getElementById('planSummary').innerHTML =
+    `<strong>${esc(plan.id)}</strong> ${pill(plan.status)} 版本 ${plan.version}；冻结于 ${esc(plan.frozenAt)}；策略 ${esc(plan.policyVersionId)} / ${plan.policyVersionNumber}`;
+  document.getElementById('planItems').innerHTML = plan.items.map(item => `
+    <tr>
+      <td>${item.seq}</td>
+      <td><button class="secondary" onclick="traceById('${item.resourceId}')">${esc(item.resourceId)}</button></td>
+      <td>${pill(item.initialDisposition)}</td>
+      <td>${pill(item.status)}<br><span class="muted">${esc(item.blockedReason || '')}</span></td>
+      <td>${esc(item.frozenExplanation.message)}</td>
+      <td>
+        <button class="secondary" onclick='show("detail", ${JSON.stringify(item).replace(/'/g, "&#39;")})'>解释</button>
+        ${item.status === 'UNKNOWN' ? `<button onclick="verify('${item.id}')">核验未知</button>` : ''}
+      </td>
+    </tr>`).join('');
+}
+
+async function verify(itemId) {
+  const data = await api(`/plan-items/${encodeURIComponent(itemId)}/verify`, {
+    method: 'POST',
+    body: JSON.stringify({ requestToken: `verify-${Date.now()}` })
+  });
+  show('detail', data);
+  await loadPlan();
+  await traceResource();
+}
+
+async function traceById(id) {
+  document.getElementById('resourceId').value = id;
+  await traceResource();
+}
+
+async function traceResource() {
+  const id = document.getElementById('resourceId').value.trim();
+  const data = await api(`/resources/${encodeURIComponent(id)}/trace`);
+  const trace = data.trace;
+  const why = trace.why;
+  document.getElementById('traceSummary').innerHTML =
+    `<div class="reason"><strong>${esc(trace.resource.name)}</strong><br>${esc(why.message || '')}<br>${pill(why.decision)}</div>`;
+  const rules = trace.planItems.flatMap(item => item.frozenExplanation.matchedRules.map(rule =>
+    `<span>${esc(rule.ruleId)} / priority ${rule.priority} / ${rule.retentionDays}d</span>`));
+  const holds = trace.legalHolds.map(hold =>
+    `<span>${esc(hold.eventType)} ${esc(hold.effectiveFrom)} ${esc(hold.reason)}</span>`);
+  const items = trace.planItems.map(item =>
+    `<span>${esc(item.planId)}#${item.seq} ${esc(item.status)}</span>`);
+  const receipts = trace.receipts.map(receipt =>
+    `<span>#${receipt.seq} ${esc(receipt.status)} ${esc(receipt.itemToken.slice(0, 12))}</span>`);
+  document.getElementById('traceChain').innerHTML = `
+    <div class="chain"><strong>规则</strong>${rules.join('') || '<span class="muted">无计划命中记录</span>'}</div>
+    <div class="chain"><strong>保留事件</strong>${holds.join('') || '<span class="muted">无</span>'}</div>
+    <div class="chain"><strong>计划条目</strong>${items.join('') || '<span class="muted">无</span>'}</div>
+    <div class="chain"><strong>执行收据</strong>${receipts.join('') || '<span class="muted">无</span>'}</div>
+    <h3>完整追踪 JSON</h3>`;
+  const pre = document.createElement('pre');
+  pre.textContent = JSON.stringify(trace, null, 2);
+  document.getElementById('traceChain').appendChild(pre);
+}
+
+async function boot() {
+  try {
+    await loadClock();
+    await loadPlan();
+    await traceResource();
+  } catch (error) {
+    document.getElementById('planSummary').innerHTML = `<span class="error">${esc(error.stack || error.message)}</span>`;
+  }
+}
+boot();
+setInterval(loadClock, 10000);
+</script>
+</body>
+</html>
